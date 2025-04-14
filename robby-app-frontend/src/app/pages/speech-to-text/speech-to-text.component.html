@@ -1,0 +1,13 @@
+<div>
+    <h1>Speech to text Converter</h1>
+    <form [formGroup]="formGroup">
+        <div><label for="file">Upload MP3 Audio File</label></div>
+        <div>
+            <input type="file" name="" id="file" formControlName="file" (change)="onFileSelected($event)" />
+        </div>
+        <div>
+            <button>Convert To Text</button>
+        </div>
+    </form>
+    <p>This is where the audio will be transcribed. This is placeholder text. </p>
+</div>
