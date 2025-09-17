@@ -1,0 +1,26 @@
+plugins {
+    id 'application'
+    id 'java'
+}
+
+group = 'com.robby'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies {
+    implementation 'org.jsoup:jsoup:1.16.1'
+    implementation 'com.google.code.gson:gson:2.10.1'
+}
+
+application {
+    // update if you change package/name of main class
+    mainClass = 'com.robby.crawler.Crawler'
+}
