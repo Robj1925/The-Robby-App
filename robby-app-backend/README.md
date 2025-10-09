@@ -22,8 +22,8 @@ A Java-based web crawler that extracts article content from websites and provide
 
 1. Clone the repository:
 ```bash
-git clone <your-repo-url>
-cd crawler
+git clone [<your-repo-url>](https://github.com/Robj1925/The-Robby-App/tree/develop/robby-app-backend)
+cd src/main/java/com/robby/crawler
 ```
 
 2. Set up environment variables:
@@ -266,7 +266,7 @@ Contributions are welcome! Please:
 
 ## License
 
-[Specify your license here]
+OpenSource
 
 ## Support
 
