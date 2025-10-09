@@ -18,9 +18,22 @@ java {
 dependencies {
     implementation 'org.jsoup:jsoup:1.16.1'
     implementation 'com.google.code.gson:gson:2.10.1'
+  //  implementation 'com.assemblyai:assemblyai-java:1.0.10'
+    implementation 'com.assemblyai:assemblyai-java:4.0.1'
+    //  implementation 'com.google.genai:java-genai:1.18.0'
+    implementation 'com.google.genai:google-genai:1.17.0'
+  //  implementation 'com.google.ai.client.generativeai:java:0.5.0'
+    implementation 'io.github.cdimascio:dotenv-java:3.0.0'
 }
 
 application {
     // update if you change package/name of main class
     mainClass = 'com.robby.crawler.Crawler'
+}
+task runQA(type: JavaExec) {
+    group = 'application'
+    description = 'Run the Question Answering system'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.robby.crawler.QuestionAnswering'
+    standardInput = System.in  // Enable interactive input
 }

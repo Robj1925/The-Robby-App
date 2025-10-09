@@ -39,27 +39,46 @@ public class Crawler {
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
-            System.out.println("Usage: gradle run --args='https://example.com' [--depth 2] [--max-pages 50]");
-            System.out.println("Or for single page: gradle run --args='https://example.com/article'");
+            // MODIFIED: Updated usage instructions
+            System.out.println("Usage: gradle run --args='<start-url> [--depth D] [--max-pages M | --crawl-all]'");
+            System.out.println("  Single page: gradle run --args='https://example.com/article'");
+            System.out.println("  Limited domain crawl: gradle run --args='https://example.com --max-pages 50'");
+            System.out.println("  Full domain crawl: gradle run --args='https://example.com --crawl-all'");
             return;
         }
 
         String startUrl = args[0];
         int depth = MAX_DEPTH;
         int maxPages = MAX_PAGES;
+        // ADDED: Flag to indicate a full domain crawl
+        boolean crawlAll = false;
 
         // Parse command line arguments
         for (int i = 1; i < args.length; i++) {
             if ("--depth".equals(args[i]) && i + 1 < args.length) {
                 depth = Integer.parseInt(args[i + 1]);
+                i++; // Skip next argument since we've consumed it
             }
             if ("--max-pages".equals(args[i]) && i + 1 < args.length) {
                 maxPages = Integer.parseInt(args[i + 1]);
+                i++; // Skip next argument
+            }
+            // ADDED: Check for the new --crawl-all flag
+            if ("--crawl-all".equals(args[i])) {
+                crawlAll = true;
             }
         }
 
+        // ADDED: If --crawl-all is specified, set maxPages to effectively infinity.
+        if (crawlAll) {
+            maxPages = Integer.MAX_VALUE;
+        }
+
         // Check if it's a single page or domain crawl
-        boolean isSinglePage = args.length == 1 && !args[0].startsWith("--");
+        // A single page crawl is now determined by having no other flags
+        boolean isSinglePage = (args.length == 1 && !args[0].startsWith("--")) ||
+                (args.length > 1 && !args[1].startsWith("--"));
+
 
         if (isSinglePage) {
             crawlSinglePage(startUrl);
@@ -116,11 +135,14 @@ public class Crawler {
         visitedUrls.add(normalizeUrl(startUrl));
 
         System.out.println("Starting to explore domain: " + startUrl);
-        System.out.println("Depth: " + maxDepth + " levels, Max Pages: " + maxPages);
+        // MODIFIED: Display a different message for full domain crawls
+        String maxPagesStr = (maxPages == Integer.MAX_VALUE) ? "ENTIRE DOMAIN" : String.valueOf(maxPages);
+        System.out.println("Depth: " + maxDepth + " levels, Max Pages: " + maxPagesStr);
+
 
         // Create multiple worker threads
         List<Future<?>> futures = new ArrayList<>();
-        int threadCount = Math.min(3, maxPages);
+        int threadCount = 3; // Keep a fixed number of threads
         for (int i = 0; i < threadCount; i++) {
             futures.add(executor.submit(() -> crawlPages(outDir, maxDepth, maxPages)));
         }
@@ -131,13 +153,28 @@ public class Crawler {
         }
 
         executor.shutdown();
-        System.out.println("All done! Collected " + totalCollected + " pages from the domain.");
+        System.out.println("All done! Collected " + totalCollected + " articles from the domain.");
     }
 
     private static void crawlPages(Path outDir, int maxDepth, int maxPages) {
-        while (totalCollected < maxPages && !urlQueue.isEmpty()) {
-            String url = urlQueue.poll();
-            if (url == null) continue;
+        while (totalCollected < maxPages) {
+            // MODIFIED: Poll with a timeout to allow threads to exit gracefully when the queue is empty
+            String url = null;
+            try {
+                url = urlQueue.poll(3, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+
+            // If poll times out and queue is still empty, exit the loop
+            if (url == null) {
+                // Double-check if the queue is truly empty to handle race conditions
+                if (urlQueue.isEmpty()) {
+                    break;
+                }
+                continue;
+            }
 
             try {
                 int currentDepth = getCurrentDepth(url);
@@ -145,8 +182,8 @@ public class Crawler {
                     continue;
                 }
 
-                System.out.printf("[%s] Exploring (%d/%d): %s%n",
-                        Instant.now().toString(), currentDepth, maxDepth, url);
+                System.out.printf("[%s] Exploring (Depth:%d): %s%n",
+                        Instant.now().toString(), currentDepth, url);
 
                 Document doc = Jsoup.connect(url)
                         .userAgent(USER_AGENT)
@@ -154,7 +191,6 @@ public class Crawler {
                         .followRedirects(true)
                         .get();
 
-                // Enhanced article detection with scoring
                 boolean isArticle = ContentExtractor.isArticlePage(doc);
 
                 if (isArticle) {
@@ -164,38 +200,35 @@ public class Crawler {
                     String published = ContentExtractor.extractPublishedDate(doc);
                     String content = ContentExtractor.extractMainContent(doc);
 
-                    // Only save if we have meaningful content
                     if (content.length() > 300 &&
                             !content.equals("Content extraction failed - may be a listing page or invalid article")) {
 
                         Article art = new Article(url, title, author, published, content);
-
                         String safeName = sanitizeFilename(title.isBlank() ? url : title);
                         Path outFile = outDir.resolve(safeName + ".json");
-                        Files.writeString(outFile, GSON.toJson(art), StandardCharsets.UTF_8,
-                                StandardOpenOption.CREATE);
+                        Files.writeString(outFile, GSON.toJson(art), StandardCharsets.UTF_8, StandardOpenOption.CREATE);
 
+                        int currentCount;
                         synchronized (Crawler.class) {
                             totalCollected++;
+                            currentCount = totalCollected;
                         }
 
-                        System.out.println("Saved article [" + totalCollected + "/" + maxPages + "]: " +
+                        // MODIFIED: Display progress differently for full domain crawl
+                        String progress = (maxPages == Integer.MAX_VALUE) ?
+                                String.valueOf(currentCount) :
+                                currentCount + "/" + maxPages;
+
+                        System.out.println("Saved article [" + progress + "]: " +
                                 title.substring(0, Math.min(title.length(), 60)) +
                                 (title.length() > 60 ? "..." : ""));
                     } else {
                         System.out.println("Skipping - insufficient content: " + url);
                     }
-                } else {
-                    System.out.println("Skipping - not detected as article page: " + url);
-
-                    // Even if it's not an article, we might still want to find links for exploration
-                    if (currentDepth < maxDepth && totalCollected < maxPages) {
-                        findNewLinks(doc, url);
-                    }
                 }
 
-                // Find more links to explore if we haven't reached limits
-                if (isArticle && currentDepth < maxDepth && totalCollected < maxPages) {
+                // Find more links to explore if we haven't reached depth limit
+                if (currentDepth < maxDepth) {
                     findNewLinks(doc, url);
                 }
 
@@ -214,79 +247,27 @@ public class Crawler {
 
     private static void findNewLinks(Document doc, String currentUrl) {
         String currentDomain = getDomain(currentUrl);
+        if (currentDomain == null) return;
 
-        // 1. First, look for pagination links (next page)
-        Elements paginationLinks = doc.select("link[rel=next], a.next, a[rel=next], .pagination a, .nav-links a");
-        for (Element link : paginationLinks) {
+        // Select all links on the page
+        Elements allLinks = doc.select("a[href]");
+
+        for (Element link : allLinks) {
             String href = link.attr("abs:href");
             if (isValidLink(currentUrl, href)) {
                 addToQueue(href);
             }
         }
-
-        // 2. Look for article links in common WordPress structures
-        Elements articleLinks = doc.select(
-                "article a, .post a, .entry-title a, h2 a, h3 a, .blog-post a, " +
-                        ".article-list a, .posts-grid a, .archive-item a, " +
-                        "a[href*='/article/']:not([href*='/article/page/']), " +
-                        "a[href*='/blog/'], a[href*='/post/']"
-        );
-
-        for (Element link : articleLinks) {
-            String href = link.attr("abs:href");
-            String text = link.text().toLowerCase();
-            String hrefLower = href.toLowerCase();
-
-            // Filter for actual article links
-            if (isValidArticleLink(currentUrl, href, text, hrefLower)) {
-                addToQueue(href);
-            }
-        }
-
-        // 3. Look for category/archive links
-        Elements categoryLinks = doc.select(
-                ".categories a, .archive-links a, .widget_categories a, " +
-                        ".post-categories a, .meta-category a"
-        );
-
-        for (Element link : categoryLinks) {
-            String href = link.attr("abs:href");
-            if (isValidLink(currentUrl, href)) {
-                addToQueue(href);
-            }
-        }
-    }
-
-    private static boolean isValidArticleLink(String currentUrl, String href, String linkText, String hrefLower) {
-        if (!isValidLink(currentUrl, href)) return false;
-
-        // Skip obvious non-article links
-        if (hrefLower.contains("/category/") ||
-                hrefLower.contains("/tag/") ||
-                hrefLower.contains("/author/") ||
-                hrefLower.contains("/page/") ||
-                hrefLower.contains("/feed") ||
-                hrefLower.contains("/comment")) {
-            return false;
-        }
-
-        // Skip links that are too short
-        if (href.length() < 20) return false;
-
-        // Skip links that contain common non-article words
-        String[] skipWords = {"category", "tag", "author", "page", "feed", "comment", "reply", "edit"};
-        for (String word : skipWords) {
-            if (hrefLower.contains(word)) return false;
-        }
-
-        return true;
     }
 
     private static boolean isValidLink(String currentUrl, String href) {
         if (href == null || href.isEmpty()) return false;
 
-        return isSameDomain(currentUrl, href) &&
-                !visitedUrls.contains(normalizeUrl(href)) &&
+        // Normalize before checking domain, as it can fail on malformed URLs
+        String normalizedHref = normalizeUrl(href);
+
+        return isSameDomain(currentUrl, normalizedHref) &&
+                !visitedUrls.contains(normalizedHref) &&
                 isHtmlPage(href) &&
                 !href.contains("#") &&
                 !href.startsWith("javascript:") &&
@@ -294,14 +275,21 @@ public class Crawler {
                 !href.contains("wp-admin");
     }
 
+
     private static void addToQueue(String href) {
         String normalized = normalizeUrl(href);
-        if (!visitedUrls.contains(normalized)) {
-            urlQueue.add(href);
-            visitedUrls.add(normalized);
-            System.out.println("Found new page to explore: " + href);
+        // Use a synchronized block to ensure thread-safe addition
+        synchronized (visitedUrls) {
+            if (!visitedUrls.contains(normalized)) {
+                urlQueue.add(href);
+                visitedUrls.add(normalized);
+                System.out.println("  -> Found new link: " + href);
+            }
         }
     }
+
+
+    // The rest of the methods (isSameDomain, getDomain, normalizeUrl, etc.) remain the same...
 
     private static boolean isSameDomain(String currentUrl, String newUrl) {
         try {
@@ -316,7 +304,10 @@ public class Crawler {
     private static String getDomain(String url) {
         try {
             URI uri = new URI(url);
-            return uri.getHost();
+            String host = uri.getHost();
+            if (host == null) return null;
+            // Strip "www." from the beginning of the host
+            return host.startsWith("www.") ? host.substring(4) : host;
         } catch (Exception e) {
             return null;
         }
@@ -325,29 +316,26 @@ public class Crawler {
     private static String normalizeUrl(String url) {
         try {
             URI uri = new URI(url);
-            String normalized = uri.normalize().toString();
+            String scheme = uri.getScheme().toLowerCase();
+            String host = uri.getHost().toLowerCase();
+            if (host.startsWith("www.")) {
+                host = host.substring(4);
+            }
+            String path = uri.normalize().getPath();
 
-            // Remove fragments
-            if (normalized.contains("#")) {
-                normalized = normalized.substring(0, normalized.indexOf('#'));
+            // Remove trailing slashes from path
+            if (path != null && path.length() > 1 && path.endsWith("/")) {
+                path = path.substring(0, path.length() - 1);
             }
 
-            // Remove query parameters
-            if (normalized.contains("?")) {
-                normalized = normalized.substring(0, normalized.indexOf('?'));
-            }
-
-            // Remove trailing slashes
-            if (normalized.endsWith("/")) {
-                normalized = normalized.substring(0, normalized.length() - 1);
-            }
-
-            // Normalize www vs non-www
-            normalized = normalized.replace("://www.", "://");
-
-            return normalized.toLowerCase();
+            return scheme + "://" + host + (path == null ? "" : path);
         } catch (Exception e) {
-            return url.toLowerCase();
+            // Basic fallback for malformed URLs
+            String cleaned = url.split("#")[0].split("\\?")[0];
+            if (cleaned.endsWith("/")) {
+                cleaned = cleaned.substring(0, cleaned.length() - 1);
+            }
+            return cleaned.toLowerCase();
         }
     }
 
@@ -362,50 +350,12 @@ public class Crawler {
             String path = uri.getPath();
             if (path == null || path.equals("/") || path.isEmpty()) return 0;
 
-            // Don't count pagination as depth increase
-            if (path.matches(".*/page/\\d+/?$")) {
-                path = path.replaceAll("/page/\\d+", "");
-            }
-
-            // Count meaningful path segments
-            String[] segments = path.split("/");
-            int depth = 0;
-            for (String segment : segments) {
-                if (!segment.isEmpty() &&
-                        !segment.matches("\\d+") &&
-                        !segment.equals("article") &&
-                        !segment.equals("blog") &&
-                        !segment.equals("category")) {
-                    depth++;
-                }
-            }
-            return depth;
+            // Count non-empty path segments
+            return (int) Arrays.stream(path.split("/"))
+                    .filter(s -> !s.isEmpty())
+                    .count();
         } catch (Exception e) {
-            return 0;
-        }
-    }
-
-    private static boolean isAllowedByRobots(String url) {
-        try {
-            URI u = new URI(url);
-            String robotsUrl = u.getScheme() + "://" + u.getHost() + "/robots.txt";
-
-            HttpClient client = HttpClient.newHttpClient();
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(robotsUrl))
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) return true;
-
-            String body = response.body().toLowerCase();
-            if (body.contains("user-agent: *") && body.contains("disallow: /")) {
-                return false;
-            }
-            return true;
-        } catch (Exception e) {
-            return true;
+            return 999; // Assign high depth to invalid URLs to prevent crawling them
         }
     }
 
@@ -418,6 +368,8 @@ public class Crawler {
         if (s.length() == 0) s = "article";
         if (s.length() > 120) s = s.substring(0, 120);
 
-        return s.replaceAll("\\s+", "_") + "_" + System.currentTimeMillis();
+        // Append a unique hash to prevent file name collisions
+        long hash = in.hashCode() + System.currentTimeMillis();
+        return s.replaceAll("\\s+", "_") + "_" + Long.toHexString(hash);
     }
 }
